@@ -9,6 +9,7 @@ var guiVisible = true
 /* visuals */
 var frameRateFloor = 24
 var canvas
+// var cropTop = 0
 var canvasWidth = window.innerWidth
 var canvasHeight = window.innerHeight
 var systemWidth = canvasWidth * 2
@@ -84,6 +85,7 @@ function setup() {
   
   gui2 = createGui('operation')
   gui2.setPosition(20, height - 200)
+  // gui2.prototype.addRange('Crop top', 0, 500, 5, cropTop, onCropTopChange)
   gui2.prototype.addBoolean('Shimmer', shimmer, onShimmerChange)
   gui2.prototype.addButton('Fullscreen', () => { fullscreen(!fullscreen())})
   gui2.prototype.addButton('Kick', () => {
@@ -109,12 +111,12 @@ function setup() {
   brightColour = random(brightColours)
   darkColour = random(darkColours)
 
-  sun = new Body(100, createVector(0,150), createVector(0,0), true)
+  sun = new Body(100, createVector(0,0), createVector(0,0), true)
   planets = []
   derivedBodies = []
   
   links = []
-  canvasCenter = createVector(width/2, height/2)
+  canvasCenter = createVector(canvas.width/2, canvas.height/2)
 
   lastPeakTime = new Date()
 }
@@ -587,6 +589,7 @@ function onShimmerChange(value){
     clearingAlpha = 5
   }
   shimmer = value
+  kick()
 }
 
 function kick(){
@@ -655,6 +658,12 @@ function onSoundBeat(){
   
   shouldDrawPlanets = true
 }
+
+// function onCropTopChange(value){
+//   cropTop = value
+//   resizeCanvas(canvasWidth, canvasHeight - cropTop)
+
+// }
 
 // check for keyboard events
 function keyPressed() {
