@@ -7,6 +7,7 @@ var gui
 var guiVisible = true
 
 /* visuals */
+var frameRateFloor = 24
 var canvas
 var canvasWidth = window.innerWidth
 var canvasHeight = window.innerHeight
@@ -20,6 +21,7 @@ var shouldWipeClear = false
 var shouldStutter = false
 var stopStutterAt
 var shouldDrawPlanets = false
+var shimmer = false
 
 var gravityConstant = 2
 var gravityConstantMin = 0
@@ -36,6 +38,7 @@ var sunDisplace = 40
 var planets
 var queuedPlanets = []
 var derivedBodies
+var planetBurstMeanCount = 5
 var trailLength = 50
 var trailLengthMin = 1
 var trailLengthMax = 300
@@ -49,6 +52,13 @@ var maxTrailWidthMin = 1
 var maxTrailWidthMax = 100
 var maxTrailWidthStep = 1
 
+/* colour */
+var brightColours, darkColours, brightColour, darkColour
+
+/* feedback */
+var shouldKick = false
+
+
 /* audio */
 var audioIn
 var audioDevices
@@ -61,23 +71,52 @@ var audioEnergy = 0
 var bassEnergy = 0
 var midEnergy = 0
 var trebleEnergy = 0
+var lastPeakTime, lastPeakPlus10, lastPeakPlusOneEigth      // 160 bpm
 
 function setup() {
   canvas = createCanvas(canvasWidth, canvasHeight)
   background(0)
   
   gui = createGui('northern lights')
-  // gui.setPosition(width+20, 0)
   gui.prototype.addRange('Planets', 0, 200, '?', 1)
   gui.addGlobals('gravityConstant', 'velocityStdDev', 'clearingAlpha')
-  gui.addGlobals('trailLength', 'trailWidthScaleFactor', 'maxTrailWidth')
+  gui.addGlobals('trailLength', 'sunDisplace')
   
-  sun = new Body(100, createVector(0,0), createVector(0,0), true)
+  gui2 = createGui('operation')
+  gui2.setPosition(20, height - 200)
+  gui2.prototype.addBoolean('Shimmer', shimmer, onShimmerChange)
+  gui2.prototype.addButton('Fullscreen', () => { fullscreen(!fullscreen())})
+  gui2.prototype.addButton('Kick', () => {
+    if(!shimmer){
+      shouldKick = true
+    } else {
+      onShimmerChange(true)
+    }
+  })
+
+  brightColours = [ 
+    color('#ffffff'),
+    color('#ffd700'),
+    color('#ff00ff')
+  ]
+
+  darkColours = [
+    color('#000000'),
+    color('#0057b7'),
+    color('#590a59')
+  ]
+
+  brightColour = random(brightColours)
+  darkColour = random(darkColours)
+
+  sun = new Body(100, createVector(0,150), createVector(0,0), true)
   planets = []
   derivedBodies = []
   
   links = []
   canvasCenter = createVector(width/2, height/2)
+
+  lastPeakTime = new Date()
 }
 
 function draw() {
@@ -98,6 +137,53 @@ function draw() {
       gui.prototype.setValue('Treble', trebleEnergy)
     }
   }
+
+  // FEEDBACK CONTROL: adjust peak threshold
+  let currentTime = new Date()
+  if(audioProcessingReady && frameCount % 30 == 0){
+    if(currentTime > lastPeakPlus10){
+      console.log('decreasing audio peak threshold')
+      audioPeakThreshold -= 0.001
+      peakDetect.threshold = audioPeakThreshold
+    }
+  }
+  if(audioProcessingReady && frameCount % 2 == 0){
+    if(currentTime < lastPeakPlusOneEigth){
+      audioPeakThreshold += 0.001
+      console.log('increasing audio peak threshold')
+      peakDetect.threshold = audioPeakThreshold
+    }
+    gui.prototype.setValue('Beat detection threshold', audioPeakThreshold)
+  }
+
+  // FEEDBACK CONTROL: monitor framerate
+  if(frameRate() != null && frameRate() < frameRateFloor){
+    console.log('FEEDBACK: framerate dip to ' + frameRate())
+    shouldKick = true
+  }
+
+  if(shouldKick){
+    kick()
+    shouldKick = false
+  }
+
+  // FEEDBACK CONTROL: monitor planet count
+  if(!shimmer){
+    if(planets.length < 5){
+      createPlanetBurstAtLocation(createVector(random(0, canvasWidth), random(0, canvasHeight)))
+      createPlanetBurstAtLocation(createVector(random(0, canvasWidth), random(0, canvasHeight)))
+    }
+  } else {
+    if(planets.length > 15){
+      for(let i = 0; i < planets.length - 15; i++){
+        planets[i].shouldDelete = true
+      }
+    }
+    
+    if(planets.length + queuedPlanets.length > 15){
+      queuedPlanets = []
+    }
+  }
   
   // upkeep - we only insert items at top of draw()
   // console.log('flushing queued planets: ' + queuedPlanets.length)
@@ -112,37 +198,72 @@ function draw() {
   
   gui.prototype.setValue('Planets', planets.length)
   
-  console.log(peakCount)
-  if(peakCount > 0 && peakCount % 10 == 0){
+  // console.log(peakCount)
+  if(!shimmer && peakCount > 0 && peakCount % 10 == 0){
     shouldStutter = true
-    console.log('stuttering')
+    // console.log('stuttering')
     stopStutterAt = peakCount + 4
   } 
   
-  if(peakCount == stopStutterAt){
+  if(peakCount == stopStutterAt || shimmer){
     shouldStutter = false
-    console.log('not stuttering')
+    // console.log('not stuttering')
   }
   
-  if(shouldStutter){
+  if(shouldStutter && !shimmer){
     if(frameCount % floor(randomGaussian(10, 5) + 2) == 0){
       shouldWipeClear = true
     }
   }
   
+  // mess with colours
+  brightColour = lerpColor(
+    brightColours[floor(noise(frameCount * 0.001, 0) * brightColours.length)], 
+    brightColours[floor(noise(frameCount * 0.001-10, 0) * brightColours.length)], 
+    noise(frameCount * 0.001)
+  )
+  // console.log(brightColour.toString())
+  darkColour = lerpColor(
+    darkColours[floor(noise(frameCount * 0.00075, 1) * darkColours.length)], 
+    darkColours[floor(noise(frameCount * 0.00075-10, 1) * darkColours.length)], 
+    noise(frameCount * 0.0005)
+  )
+
   if(!shouldWipeClear){
-    background(0, 0, 0, clearingAlpha)
+    if(!shimmer){
+      let bgColour = darkColour
+      push()
+      blendMode(BLEND)
+      bgColour.setAlpha(clearingAlpha)
+      background(bgColour)
+      pop()
+    } else {
+      push()
+      blendMode(BLEND)
+      let bgColour = darkColour
+      bgColour.setAlpha(clearingAlpha)
+      background(bgColour)
+      pop()
+    }
   } else {
-    thisFrameTrailLength = 0
-    background(0)
-    shouldWipeClear = false
+    console.log('wiping clear')
+    if(!shimmer){
+      thisFrameTrailLength = 0
+      push()
+      blendMode(BLEND)
+      background(darkColour)
+      pop()
+      shouldWipeClear = false
+    } 
   }
   
   translate(canvasCenter.x, canvasCenter.y)
   
   // update & draw sun
   sun.updateSun(bassEnergy)
-  sun.draw()
+  if(!shimmer){
+    sun.draw()
+  }
   
   for(let i = planets.length - 1; i >= 0; i--){
     if(planets[i].shouldDelete){
@@ -191,39 +312,69 @@ function draw() {
     }
   
     // draw derivedBodies
-    push()
-    noFill()
-    stroke(255)
-    let firstPoint, secondPoint, curveLength
-    for( let i = derivedBodies.length - 1; i >= 0; i--){
-      thisBodyPoints = derivedBodies[i].points
-      firstPoint = thisBodyPoints[0]
-      secondPoint = thisBodyPoints[1] || thisBodyPoints[0]
-      curveLength = sqrt(
-        pow(secondPoint[0] - firstPoint[0], 2) +
-        pow(secondPoint[1] - firstPoint[1], 2)
-      )
-      // console.log(curveLength)
-      strokeWeight(max(1, maxTrailWidth - curveLength*trailWidthScaleFactor))
-      
-      beginShape()
-      for(let j = derivedBodies[i].points.length - 1; j >= 0; j--){  
-        if(j == derivedBodies[i].points.length-1 ||
-           j == 0){
-          // draw first and last points twice for curve rendering
+
+    if(!shimmer){
+      push()
+      noFill()
+      brightColour.setAlpha(255)
+      stroke(brightColour)
+      let firstPoint, secondPoint, curveLength
+      for( let i = derivedBodies.length - 1; i >= 0; i--){
+        thisBodyPoints = derivedBodies[i].points
+        firstPoint = thisBodyPoints[0]
+        secondPoint = thisBodyPoints[1] || thisBodyPoints[0]
+        curveLength = sqrt(
+          pow(secondPoint[0] - firstPoint[0], 2) +
+          pow(secondPoint[1] - firstPoint[1], 2)
+        )
+        // console.log(curveLength)
+        strokeWeight(max(1, maxTrailWidth - curveLength*trailWidthScaleFactor))
+        
+        beginShape()
+        for(let j = derivedBodies[i].points.length - 1; j >= 0; j--){  
+          if(j == derivedBodies[i].points.length-1 ||
+            j == 0){
+            // draw first and last points twice for curve rendering
+            curveVertex(
+              derivedBodies[i].points[j][0],
+              derivedBodies[i].points[j][1]
+            )
+          }
           curveVertex(
             derivedBodies[i].points[j][0],
             derivedBodies[i].points[j][1]
           )
         }
-        curveVertex(
-          derivedBodies[i].points[j][0],
-          derivedBodies[i].points[j][1]
-        )
+        endShape()
       }
-      endShape()
+      pop()
+    } else {
+      // shimmer!
+      push()
+      noFill()
+      strokeWeight(1)    
+
+      for( let i = derivedBodies.length - 1; i >= 0; i--){
+        let lastX = 0
+        for( let j = derivedBodies[i].points.length - 1; j >= 0; j--){
+        
+          const point = derivedBodies[i].points[j]
+          if(round(point[0]) != lastX){
+            const x = round(point[0])
+            brightColour.setAlpha(1 + audioEnergy * 0.1)      
+            stroke(brightColour)
+            // console.log(sin(frameCount * 0.01))
+            line(x, -64 - point[1]/2 - (sin(frameCount * 0.05 + j*0.05 + random(0, 0.2)) * random(0,20)) - randomGaussian(0,10), x, 64 + point[1]/2 - (sin(frameCount * 0.05 + j*0.05+random(0, 0.2)) * random(0,20))- randomGaussian(0,10))
+
+            line(x + x/8, -32 - point[1]/4 - (sin(frameCount * 0.010) * random(0,40)), x + x/8, 32 + point[1]/4 - (sin(frameCount * 0.001) * random(0,40)))
+
+            line(x + x/16, -16 - point[1]/8 - (sin(frameCount * 0.001) * random(0,60)), x + x/16, 16 + point[1]/8 - (sin(frameCount * 0.001) * random(0,60)))
+            lastX = x
+          }
+        }
+      }
+      pop()
     }
-    pop()
   }
     
     
@@ -232,7 +383,6 @@ function draw() {
 
 async function mousePressed(){
   initAudioInput()
-  fullscreen(true)
   
   const planetBurstCoords = createVector(mouseX, mouseY) 
   createPlanetBurstAtLocation(planetBurstCoords)
@@ -251,7 +401,7 @@ async function mousePressed(){
   
 function createPlanetBurstAtLocation(location){
   // spray some new planets
-  const planetBurstCount = floor(randomGaussian(7, 2))
+  const planetBurstCount = floor(randomGaussian(planetBurstMeanCount, 2))
   for(let i = 0; i < planetBurstCount; i++){
     const safeLocation = location.copy()
     createPlanetAtLocation(safeLocation)
@@ -279,18 +429,19 @@ class Body {
     this.velocity = velocity
     this.opacity = 255
     this.radius = 10
+    this.center
     
     this.isSun = isSun
     if(this.isSun){
       this.radius = this.radiusFromMass(this.mass)
+      this.center = createVector(this.position.x, this.position.y)
     } else {
       this.opacity = random(10, 100)
       this.radius = random(10, 150)
+      this.center = createVector(0,0)
     }
     
     this.shouldDelete = false
-    
-    this.center = createVector(0,0)
   }
   
   attract(child){
@@ -329,10 +480,11 @@ class Body {
     this.mass = this.baseMass + value
     this.radius = this.radiusFromMass(this.mass)
     
-    this.opacity = value - 25
+    this.opacity = value + 25
     
     if(this.position != this.center){
-      const toCenter = this.center.sub(this.position)
+      const safeCenter = this.center.copy()
+      const toCenter = safeCenter.sub(this.position)
       const step = toCenter.mult(0.2)
       this.position.x += step.x
       this.position.y += step.y
@@ -344,11 +496,16 @@ class Body {
   }
   
   draw(){
-    push()
-    noStroke()
-    fill(255, 255, 255, this.opacity)
-    circle(this.position.x, this.position.y, this.radius)
-    pop()
+    if(!shimmer){
+      let fillColour = brightColour
+      fillColour.setAlpha(this.opacity)
+  
+      push()
+      noStroke()
+      fill(fillColour)
+      circle(this.position.x, this.position.y, this.radius)
+      pop()
+    }
   }
 }
 
@@ -409,9 +566,84 @@ function onBeatDetectionThresholdChange(value){
   peakDetect.threshold = value
 }
 
+function onShimmerChange(value){
+  kick()
+  if(value){
+    shouldWipe = true
+    blendMode(BLEND)
+    gravityConstant = random(0.05, 1)
+    sunDisplace = random(0,2)
+    planetBurstMeanCount = random(1, 3)
+    trailLength= random(75, 150)
+    clearingAlpha = 5
+
+    gui.prototype.setValue('trailLength', trailLength)
+    gui.prototype.setValue('gravityConstant', gravityConstant)
+    gui.prototype.setValue('sunDisplace', sunDisplace)
+    gui.prototype.setValue('clearingAlpha', clearingAlpha)
+
+  } else {
+    blendMode(BLEND)
+    clearingAlpha = 5
+  }
+  shimmer = value
+}
+
+function kick(){
+  console.log('kicking')
+  if(!shimmer){
+    trailLength = random(10, 100)
+    gravityConstant = abs(randomGaussian(2, 2))
+    sunDisplace = random(0, 50)
+    planetBurstMeanCount = random(2, 7)
+  } else {
+    gravityConstant = random(0.05, 1)
+    sunDisplace = random(0,2)
+    planetBurstMeanCount = random(1, 3)
+    trailLength= random(150, 250)
+    clearingAlpha = 4
+  }
+  
+
+  gui.prototype.setValue('trailLength', trailLength)
+  gui.prototype.setValue('gravityConstant', gravityConstant)
+  gui.prototype.setValue('sunDisplace', sunDisplace)
+  gui.prototype.setValue('clearingAlpha', clearingAlpha)
+  
+
+  frameCount = 0
+  shuffleArray(brightColours)
+  shuffleArray(darkColours)
+  for(let i = planets.length - 1; i >= 0; i--){
+    if(!shimmer){
+      if(random(0,10) < 9){
+        planets[i].shouldDelete = true
+      }
+    } else {
+      if(random(0,10) > 9){
+        planets[i].shouldDelete = true
+      }
+    }
+  }
+
+  // spawn some new planets?
+}
+
+const shuffleArray = array => {
+  for (let i = array.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    const temp = array[i];
+    array[i] = array[j];
+    array[j] = temp;
+  }
+}
+
 function onSoundBeat(){
   // console.log("beat")
   peakCount++
+  lastPeakTime = new Date()
+  lastPeakPlus10 = new Date().setSeconds(lastPeakTime.getSeconds() + 10)
+  lastPeakPlusOneEigth = new Date().setSeconds(lastPeakTime.getSeconds() + 0.375)
   
   const randomLocation = createVector(random(0, width), random(0, height))
   createPlanetBurstAtLocation(randomLocation)
