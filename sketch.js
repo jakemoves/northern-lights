@@ -67,7 +67,7 @@ function setup() {
   background(0)
   
   gui = createGui('northern lights')
-  gui.setPosition(width+20, 0)
+  // gui.setPosition(width+20, 0)
   gui.prototype.addRange('Planets', 0, 200, '?', 1)
   gui.addGlobals('gravityConstant', 'velocityStdDev', 'clearingAlpha')
   gui.addGlobals('trailLength', 'trailWidthScaleFactor', 'maxTrailWidth')
